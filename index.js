@@ -7,60 +7,83 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// In-memory store for OTPs (phone -> { otp, expiry })
-const otpStore = {};
-
 const client = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH);
 
-// ✅ Send OTP
+// ✅ Send OTP using Twilio Verify API
 app.post("/send-otp", async (req, res) => {
   const { phone } = req.body;
 
-  if (!phone) return res.status(400).json({ error: "Phone number is required" });
-
-  const otp = Math.floor(100000 + Math.random() * 900000).toString(); // Generate 6-digit OTP
-  const expiry = Date.now() + 5 * 60 * 1000; // 5 minutes validity
-
-  otpStore[phone] = { otp, expiry };
+  if (!phone) {
+    return res.status(400).json({
+      success: false,
+      error: "Phone number is required",
+    });
+  }
 
   try {
-    const message = await client.messages.create({
-      body: `Your OTP is: ${otp}`,
-      from: process.env.TWILIO_NUMBER,
-      to: phone,
-    });
+    const verification = await client.verify
+      .services(process.env.TWILIO_VERIFY_SID)
+      .verifications.create({
+        to: phone,
+        channel: "sms",
+      });
 
-    res.json({ success: true, sid: message.sid, message: "OTP sent successfully" });
+    res.status(200).json({
+      success: true,
+      data: {
+        status: verification.status,
+        message: "OTP sent successfully",
+      },
+    });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || "Failed to send OTP",
+    });
   }
 });
 
-// ✅ Verify OTP
-app.post("/verify-otp", (req, res) => {
+// ✅ Verify OTP using Twilio Verify API
+app.post("/verify-otp", async (req, res) => {
   const { phone, otp } = req.body;
 
   if (!phone || !otp) {
-    return res.status(400).json({ error: "Phone number and OTP are required" });
+    return res.status(400).json({
+      success: false,
+      error: "Phone number and OTP are required",
+    });
   }
 
-  const storedData = otpStore[phone];
+  try {
+    const verificationCheck = await client.verify
+      .services(process.env.TWILIO_VERIFY_SID)
+      .verificationChecks.create({
+        to: phone,
+        code: otp,
+      });
 
-  if (!storedData) {
-    return res.status(400).json({ error: "OTP not found. Please request again." });
+    if (verificationCheck.status === "approved") {
+      return res.status(200).json({
+        success: true,
+        data: {
+          verified: true,
+          message: "OTP verified successfully",
+        },
+      });
+    } else {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid or expired OTP",
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message || "Failed to verify OTP",
+    });
   }
-
-  if (Date.now() > storedData.expiry) {
-    delete otpStore[phone];
-    return res.status(400).json({ error: "OTP expired. Please request again." });
-  }
-
-  if (storedData.otp !== otp) {
-    return res.status(400).json({ error: "Invalid OTP" });
-  }
-
-  delete otpStore[phone]; // OTP used once
-  res.json({ success: true, message: "OTP verified successfully" });
 });
 
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`🚀 Server running on http://localhost:${PORT}`)
+);
